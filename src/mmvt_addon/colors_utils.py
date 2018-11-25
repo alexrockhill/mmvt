@@ -2,16 +2,7 @@ import re
 from collections import OrderedDict
 import numpy as np
 from itertools import cycle
-try:
-    import matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
-except:
-    print('Unable to import matplotlib')
-import os
-import os.path as op
-import math
-import bpy
+
 # Light version of webcolors
 
 # http://stackoverflow.com/a/4382138/1060738
