@@ -1183,8 +1183,8 @@ def activity_map_obj_coloring(cur_obj, vert_values, lookup=None, threshold=0, ov
     #check if our mesh already has Vertex Colors, and if not add some... (first we need to make sure it's the active object)
     scn.objects.active = cur_obj
     cur_obj.select = True
-    # if len(mesh.vertices) < 1e3:
-    if bpy.context.scene.plot_mesh_using_uv_map and len(mesh.vertices) < 1e3:
+    if len(mesh.vertices) < 1e3:
+        # if bpy.context.scene.plot_mesh_using_uv_map and len(mesh.vertices) < 1e3:
         uv_map_obj_coloring(cur_obj, mesh, valid_verts, vert_values, uv_size, data_min, colors_ratio)
     else:
         vertex_object_coloring(cur_obj, mesh, coloring_layer, valid_verts, vert_values, lookup,
@@ -1192,6 +1192,7 @@ def activity_map_obj_coloring(cur_obj, vert_values, lookup=None, threshold=0, ov
                                data_min, colors_ratio)
 
 
+@mu.profileit('cumtime', op.join(mu.get_user_fol()))
 def uv_map_obj_coloring(cur_obj, mesh, valid_verts, vert_values, uv_size, data_min, colors_ratio):
     if not 'activity_map' in mesh.uv_textures:
         mesh.uv_textures.new('activity_map')
@@ -1224,7 +1225,7 @@ def uv_map_obj_coloring(cur_obj, mesh, valid_verts, vert_values, uv_size, data_m
             f = sym_gauss_2D(x0, y0, sigma)
             for i, x in enumerate(np.linspace(0, 1, uv_size)):
                 for j, y in enumerate(np.linspace(0, 1, uv_size)):
-                    im[j,i] += f(x, y)/f(x0, y0)*vert_values[this_loop.vertex_index]
+                    im[j, i] += f(x, y)/f(x0, y0)*vert_values[this_loop.vertex_index]
     '''fig.savefig('test.png')
     fig,a = plt.subplots()
     a.imshow(im)
@@ -1233,15 +1234,19 @@ def uv_map_obj_coloring(cur_obj, mesh, valid_verts, vert_values, uv_size, data_m
     # https://blender.stackexchange.com/questions/643/is-it-possible-to-create-image-data-and-save-to-a-file-from-a-script
     map_dir = op.join(os.getcwd(), 'examples')
     fname = op.join(map_dir, 'activity_map.png')
-    fig = bpy.data.images.new('Activity Map', uv_size, uv_size)
+    fig = bpy.data.images.new('Activity Map', width=uv_size, height=uv_size, alpha=True)
     for ind, (r,g,b) in enumerate(calc_colors(im.flatten(), data_min, colors_ratio)):
-        fig.pixels[(4*ind) + 0] = r # R
-        fig.pixels[(4*ind) + 1] = g # G
-        fig.pixels[(4*ind) + 2] = b # B
-        fig.pixels[(4*ind) + 3] = 1.0 # A = 1.0
+        fig.pixels[(4*ind) + 0] = r  # R
+        fig.pixels[(4*ind) + 1] = g  # G
+        fig.pixels[(4*ind) + 2] = b  # B
+        fig.pixels[(4*ind) + 3] = 1.0 if abs(im.flatten()[ind]) > 0.25 else 0.0  # A
     fig.filepath_raw = fname
+    #fig.use_alpha = True
+    #fig.alpha_mode = 'STRAIGHT'
     fig.file_format = 'PNG'
     fig.save()
+
+    return
 
     if not 'ActivityTexture' in bpy.data.textures:
         bpy.data.textures.new('ActivityTexture', type='IMAGE')
