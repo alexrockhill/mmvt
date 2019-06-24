@@ -775,7 +775,8 @@ def calc_source_power_spectrum(
         fmin=1, fmax=120, bandwidth=2., bands=None, max_epochs_num=0,
         mri_subject='', epo_fname='', inv_fname='', snr=3.0, pick_ori=None, apply_SSP_projection_vectors=True,
         add_eeg_ref=True, fwd_usingMEG=True, fwd_usingEEG=True, surf_name='pial', precentiles=(1, 99),
-        epochs=None, src=None, overwrite=False, do_plot=False, save_tmp_files=False, n_jobs=6):
+        baseline_times=(None, None), epochs=None, src=None, overwrite=False, do_plot=False, save_tmp_files=False,
+        save_vertices_data=False, n_jobs=6):
     if isinstance(events, str):
         events = {events:1}
     if mri_subject == '':
@@ -791,29 +792,39 @@ def calc_source_power_spectrum(
     fol = utils.make_dir(op.join(MMVT_DIR, mri_subject, 'meg'))
     plots_fol = utils.make_dir(op.join(MMVT_DIR, subject, 'meg', 'plots'))
     tmp_fol = utils.make_dir(op.join(fol, 'labels_power'))
-    power_spectrum = None
+    power_spectrum, power_spectrum_baseline = None, None
     first_time = True
     labels = None
+    freqs = None
     for (cond_ind, cond_name), em in product(enumerate(events_keys), extract_modes):
         vertices_data = {hemi: dict() for hemi in utils.HEMIS}
+        vertices_baseline_data = {hemi: dict() for hemi in utils.HEMIS}
         vertices_data_fname = op.join(fol, '{}_{}_{}_vertices_power_spectrum.pkl'.format(cond_name, inverse_method, em))
         output_fname = op.join(fol, '{}_{}_{}_power_spectrum.npz'.format(cond_name, inverse_method, em))
         if op.isfile(output_fname) and not overwrite:
             print('{} already exist'.format(output_fname))
+            d = np.load(output_fname)
             if do_plot:
-                d = np.load(output_fname)
                 labels = lu.read_labels(mri_subject, SUBJECTS_MRI_DIR, atlas, surf_name=surf_name, n_jobs=n_jobs)
                 plot_psds(subject, d['power_spectrum'], d['frequencies'], labels, cond_ind, cond_name, plots_fol)
-            continue
+            if not (baseline_times[0] is None and baseline_times[1] is None) and \
+                    'power_spectrum_basline' not in d or d['power_spectrum_basline'] is None:
+                print('Baseline needed to be computed')
+            else:
+                continue
 
         if epochs is None:
             epo_cond_fname = get_cond_fname(epo_fname, cond_name)
             print('Reading epochs from {}'.format(epo_cond_fname))
-            return True
             if not op.isfile(epo_cond_fname):
                 print('single_trial_stc and not epochs file was found! ({})'.format(epo_cond_fname))
                 return False
-            epochs = mne.read_epochs(epo_cond_fname, apply_SSP_projection_vectors, add_eeg_ref)
+            epochs = mne.read_epochs(epo_cond_fname, apply_SSP_projection_vectors) #, preload=False) # add_eeg_ref
+            if not (baseline_times[0] is None and baseline_times[1] is None):
+                baseline = epochs.copy().crop(baseline_times[0], baseline_times[1])
+                epochs = epochs.crop(baseline_times[1], None)
+            else:
+                baseline = None
 
         if first_time:
             first_time = False
@@ -839,33 +850,54 @@ def calc_source_power_spectrum(
             stcs = mne.minimum_norm.compute_source_psd_epochs(
                 epochs, inverse_operator, lambda2=lambda2, method=inverse_method, fmin=fmin, fmax=fmax,
                 bandwidth=bandwidth, label=label, return_generator=True, n_jobs=n_jobs)
-            for epoch_ind, stc in enumerate(stcs):
+            if baseline is not None:
+                baseline_stcs = mne.minimum_norm.compute_source_psd_epochs(
+                    baseline, inverse_operator, lambda2=lambda2, method=inverse_method, fmin=fmin, fmax=fmax,
+                    bandwidth=bandwidth, label=label, return_generator=True, n_jobs=n_jobs)
+            else:
+                baseline_stcs = [None] * epochs_num
+            for epoch_ind, (stc, baseline_stc) in enumerate(zip(stcs, baseline_stcs)):
                 if epoch_ind >= epochs_num:
                     break
                 freqs = stc.times
+                baseline_freqs = baseline_stc.times if baseline is not None else None
                 label_vertices = stc.lh_vertno if label.hemi == 'lh' else stc.rh_vertno
                 if power_spectrum is None:
                     power_spectrum = np.empty((epochs_num, len(labels), len(freqs), len(events)))
+                    if baseline is not None:
+                        power_spectrum_baseline = np.empty((epochs_num, len(labels), len(baseline_freqs), len(events)))
                 power_spectrum[epoch_ind, label_ind, :, cond_ind] = np.mean(stc.data, axis=0)
-                if epoch_ind == 0:
+                if baseline is not None:
+                    power_spectrum_baseline[epoch_ind, label_ind, :, cond_ind] = np.mean(baseline_stc.data, axis=0)
+                if save_vertices_data:
+                    if epoch_ind == 0:
+                        for vert_ind, vert_no in enumerate(label_vertices):
+                            vertices_data[label.hemi][vert_no] = np.zeros((epochs_num, len(freqs)))
+                            if baseline is not None:
+                                vertices_baseline_data[label.hemi][vert_no] = np.zeros((epochs_num, len(baseline_freqs)))
                     for vert_ind, vert_no in enumerate(label_vertices):
-                        vertices_data[label.hemi][vert_no] = np.zeros((epochs_num, len(freqs)))
-                for vert_ind, vert_no in enumerate(label_vertices):
-                    vertices_data[label.hemi][vert_no][epoch_ind] = stc.data[vert_ind]
+                        vertices_data[label.hemi][vert_no][epoch_ind] = stc.data[vert_ind]
+                        if baseline is not None:
+                            vertices_baseline_data[label.hemi][vert_no][epoch_ind] = baseline_stc.data[vert_ind]
             if save_tmp_files:
+                bsp = power_spectrum_baseline[:, label_ind, :, cond_ind] if baseline is not None else None
                 np.savez(output_fname, power_spectrum=power_spectrum[:, label_ind, :, cond_ind], frequencies=freqs,
-                         label=label.name, cond=cond_name)
+                         label=label.name, cond=cond_name, power_spectrum_basline=bsp, baseline_freqs=baseline_freqs)
             if do_plot:
                 plot_label_psd(power_spectrum[:, label_ind, :, cond_ind], freqs, label, cond_name, plots_fol)
         # for hemi in utils.HEMIS:
         #     for vert_no in vertices_data[hemi].keys():
         #         vertices_data[hemi][vert_no]
-        utils.save((vertices_data, freqs), vertices_data_fname)
-        np.savez(output_fname, power_spectrum=power_spectrum, frequencies=freqs)
+        if save_vertices_data:
+            utils.save((vertices_data, vertices_baseline_data, freqs, baseline_freqs), vertices_data_fname)
+        bsp = power_spectrum_baseline[:, label_ind, :, cond_ind] if baseline is not None else None
+        np.savez(output_fname, power_spectrum=power_spectrum, frequencies=freqs, power_spectrum_basline=bsp,
+                 baseline_freqs=baseline_freqs)
 
-    calc_vertices_data_power_bands(subject, events, mri_subject, inverse_method, extract_modes, vertices_data, freqs)
-    calc_labels_power_bands(
-        mri_subject, atlas, events, inverse_method, extract_modes, precentiles, bands, labels, overwrite, n_jobs=n_jobs)
+    if save_vertices_data:
+        calc_vertices_data_power_bands(subject, events, mri_subject, inverse_method, extract_modes, vertices_data, freqs)
+    # calc_labels_power_bands(
+    #     mri_subject, atlas, events, inverse_method, extract_modes, precentiles, bands, labels, overwrite, n_jobs=n_jobs)
     return True
 
 
@@ -1063,8 +1095,8 @@ def calc_labels_power_bands(mri_subject, atlas, events, inverse_method='dSPM', e
         freqs = d.frequencies
         for band, (lf, hf) in bands.items():
             output_fname = op.join(fol, '{}_labels_{}_{}_{}_power.npz'.format(cond_name, inverse_method, em, band))
-            # if op.isfile(output_fname) and not overwrite:
-            #     return True
+            if op.isfile(output_fname) and not overwrite:
+                return True
             band_mask = np.where((freqs >= lf) & (freqs <= hf))
             band_power = np.empty((len(labels), psd.shape[0]))
             for label_ind, label_name in enumerate(labels):
@@ -1645,6 +1677,11 @@ def read_bem_solution(bem_fname):
 
 
 def prepare_bem_surfaces(mri_subject, remote_subject_dir, args):
+
+    def watershed_exist(fol):
+        return np.all([op.isfile(op.join(fol, 'watershed', watershed_fname.format(mri_subject)))
+                       for watershed_fname in watershed_files])
+
     bem_files = ['brain.surf', 'inner_skull.surf', 'outer_skin.surf', 'outer_skull.surf']
     watershed_files = ['{}_brain_surface', '{}_inner_skull_surface', '{}_outer_skin_surface',
                        '{}_outer_skull_surface']
@@ -1655,17 +1692,15 @@ def prepare_bem_surfaces(mri_subject, remote_subject_dir, args):
             mri_subject, remote_subject_dir, SUBJECTS_MRI_DIR,
             {'bem': [f for f in bem_files]}, args)
     bem_files_exist = np.all([op.isfile(op.join(bem_fol, bem_fname)) for bem_fname in bem_files])
-    watershed_files_exist = np.all(
-        [op.isfile(op.join(bem_fol, 'watershed', watershed_fname.format(mri_subject))) for watershed_fname in
-         watershed_files])
+    watershed_files_exist = watershed_exist(bem_fol)
     if not watershed_files_exist:
         remote_bem_fol = op.join(remote_subject_dir, 'bem')
-        watershed_files_exist = np.all(
-            [op.isfile(op.join(remote_bem_fol, 'watershed', watershed_fname.format(mri_subject))) for watershed_fname in
-             watershed_files])
+        watershed_files_exist = watershed_exist(remote_bem_fol)
         if watershed_files_exist:
             utils.make_link(op.join(remote_bem_fol, 'watershed'), op.join(bem_fol, 'watershed'))
     if not bem_files_exist and not watershed_files_exist:
+        os.environ['SUBJECT'] = mri_subject
+        utils.run_script('mne_watershed_bem')
         err_msg = '''BEM files don't exist, you should create it first using mne_watershed_bem.
             For that you need to open a terminal, define SUBJECTS_DIR, SUBJECT, source MNE, and run
             mne_watershed_bem.
@@ -1673,7 +1708,8 @@ def prepare_bem_surfaces(mri_subject, remote_subject_dir, args):
             basrc: export SUBJECT={0}
             You can take a look here:
             http://perso.telecom-paristech.fr/~gramfort/mne/MRC/mne_anatomical_workflow.pdf '''.format(mri_subject)
-        raise Exception(err_msg)
+        # raise Exception(err_msg)
+    watershed_files_exist = watershed_exist(bem_fol)
     if not bem_files_exist and watershed_files_exist:
         for bem_file, watershed_file in zip(bem_files, watershed_files):
             utils.remove_file(op.join(bem_fol, bem_file))
@@ -2604,11 +2640,14 @@ def plot_topomap(subject, evoked_fname, evoked_key=None, times=[], find_peaks=Fa
 
 def calc_induced_power(subject, epochs, atlas, task, bands, inverse_operator, lambda2, stc_fname,
                        calc_inducde_power_per_label=True, normalize_proj=True, overwrite_stc=False,
-                       modality='meg', df=1, n_cycles=2, n_jobs=6):
+                       modality='meg', df=1, n_cycles=2, downsample=2, n_jobs=6):
     # https://martinos.org/mne/stable/auto_examples/time_frequency/plot_source_space_time_frequency.html
     from mne.minimum_norm import source_band_induced_power
     if bands is None or bands == '':
-        bands = dict(delta=[1, 4], theta=[4, 8], alpha=[8, 15], beta=[15, 30], gamma=[30, 55], high_gamma=[65, 120])
+        min_delta = 1 if n_cycles <= 2 else 2
+        max_high_gamma = 120 # 300
+        bands = dict(delta=[min_delta, 4], theta=[4, 8], alpha=[8, 15], beta=[15, 30], gamma=[30, 55], high_gamma=[65, max_high_gamma])
+        freqs = np.concatenate([np.arange(1, 30), np.arange(31, 60, 3), np.arange(60, max_high_gamma + 5, 5)])
     ret = check_bands(epochs, bands, df, n_cycles)
     if not ret:
         return False
@@ -2616,7 +2655,7 @@ def calc_induced_power(subject, epochs, atlas, task, bands, inverse_operator, la
         epochs.info.normalize_proj()
     if calc_inducde_power_per_label:
         fol = utils.make_dir(op.join(SUBJECT_MEG_FOLDER, '{}-induced_power'.format(stc_fname)))
-        labels = lu.read_labels(MRI_SUBJECT, SUBJECTS_MRI_DIR, atlas)
+        labels = lu.read_labels(subject, SUBJECTS_MRI_DIR, atlas)
         if len(labels) == 0:
             raise Exception('No labels found for {}!'.format(atlas))
         now = time.time()
@@ -2630,19 +2669,36 @@ def calc_induced_power(subject, epochs, atlas, task, bands, inverse_operator, la
                 continue
             print('Calculating source_band_induced_power for {}'.format(label.name))
             utils.time_to_go(now, ind, len(labels), runs_num_to_print=1)
+            powers_fname = op.join(fol, '{}_{}_induced_power.npy'.format(task, label.name))
             # On a normal computer, you might want to set n_jobs to 1 (memory...)
-            stcs = source_band_induced_power(
-                epochs, inverse_operator, bands, label, n_cycles=n_cycles, use_fft=False, lambda2=lambda2,
-                pca=True, df=df, n_jobs=n_jobs)
-            for band, stc_band in stcs.items():
+            # !!! We changed the mne-python implementation, to return the powers !!!
+            # todo: copy the function instead of chaging it
+            # stcs, powers = source_band_induced_power(
+            #     epochs, inverse_operator, bands, label, n_cycles=n_cycles, use_fft=False, lambda2=lambda2,
+            #     pca=True, df=df, n_jobs=n_jobs)
+            import mne.minimum_norm.time_frequency
+            # vertno, src_sel = mne.minimum_norm.inverse.label_src_vertno_sel(label, inv['src'])
+            powers, _, _ = mne.minimum_norm.time_frequency._source_induced_power(
+                epochs, inverse_operator, freqs, label=label, lambda2=lambda2,
+                method='dSPM', n_cycles=n_cycles, n_jobs=n_jobs)
+            if powers.shape[2] % 2 == 1:
+                powers = powers[:, :, :-1]
+            if downsample > 1:
+                powers = utils.downsample_3d(powers, downsample)
+            powers_db = 10 * np.log10(powers) # dB/Hz should be baseline corrected!!!
+            print('Saving powers to {}'.format(powers_fname))
+            np.save(powers_fname, powers_db.astype(np.float16))
+
+            # for band, stc_band in stcs.items():
                 # print('Saving the {} source estimate to {}.stc'.format(label.name, stc_fname))
-                band_stc_fname = op.join(fol, '{}_{}_{}_induced_power'.format(task, label.name, band))
-                print('Saving {}'.format(band_stc_fname))
-                stc_band.save(band_stc_fname)
-        params = [(subject, atlas, task, band, stc_fname, labels, modality, fol, overwrite_stc)
-                  for band in bands.keys()]
-        results = utils.run_parallel(_combine_labels_stc_files_parallel, params, len(bands))
-        ret = all(results)
+                # band_stc_fname = op.join(fol, '{}_{}_{}_induced_power'.format(task, label.name, band))
+                # print('Saving {}'.format(band_stc_fname))
+                # stc_band.save(band_stc_fname)
+        # params = [(subject, atlas, task, band, stc_fname, labels, modality, fol, overwrite_stc)
+        #           for band in bands.keys()]
+        # results = utils.run_parallel(_combine_labels_stc_files_parallel, params, len(bands))
+        # ret = all(results)
+        ret = True
     else:
         stcs = source_band_induced_power(
             epochs, inverse_operator, bands, n_cycles=n_cycles, use_fft=False, lambda2=lambda2, pca=True,
@@ -2655,6 +2711,7 @@ def calc_induced_power(subject, epochs, atlas, task, bands, inverse_operator, la
             stc_band.save(band_stc_fname)
             ret = ret and utils.both_hemi_files_exist('{}-{}.stc'.format(band_stc_fname, '{hemi}'))
     return ret
+
 
 
 def check_bands(epochs, bands, df=1, n_cycles=2):
@@ -4419,12 +4476,14 @@ def calc_fwd_inv_wrapper(subject, args, conditions=None, flags={}, mri_subject='
                     if trans_file != COR:
                         utils.copy_file(trans_file, local_cor_fname)
                 args.cor_fname = local_cor_fname
-            src_dic = dict(bem=['*-{}-{}*-src.fif'.format(
+            src_dic = dict(bem=['*-{}-{}-src.fif'.format(
+                args.recreate_src_spacing[:3], args.recreate_src_spacing[-1])])
+            src_dic_ast = dict(bem=['*-{}-{}*-src.fif'.format(
                 args.recreate_src_spacing[:3], args.recreate_src_spacing[-1])])
             create_src_dic = dict(surf=['lh.{}'.format(args.recreate_src_surface), 'rh.{}'.format(args.recreate_src_surface),
                        'lh.sphere', 'rh.sphere'])
-            for nec_file in [src_dic, create_src_dic]:
-                file_exist = prepare_subject_folder(
+            for nec_file in [src_dic, src_dic_ast,  create_src_dic]:
+                file_exist, _ = prepare_subject_folder(
                     mri_subject, args.remote_subject_dir, SUBJECTS_MRI_DIR,
                     nec_file, args)
                 if file_exist:
@@ -4440,6 +4499,8 @@ def calc_fwd_inv_wrapper(subject, args, conditions=None, flags={}, mri_subject='
                 sub_corticals_codes_file, args.fwd_recreate_source_space, args.recreate_bem_solution, args.bem_ico,
                 args.recreate_src_spacing, args.recreate_src_surface, args.overwrite_fwd, args.remote_subject_dir,
                 args.n_jobs, args)
+        else:
+            flags['make_forward_solution'] = True
 
         if utils.should_run(args, 'calc_inverse_operator') and flags.get('make_forward_solution', True):
             epo_fname = get_epo_fname(args.epo_fname)
@@ -4459,6 +4520,11 @@ def calc_fwd_inv_wrapper(subject, args, conditions=None, flags={}, mri_subject='
                 args.use_empty_room_for_noise_cov, args.use_raw_for_noise_cov,
                 args.overwrite_noise_cov, args.inv_calc_cortical, args.inv_calc_subcorticals,
                 args.fwd_usingMEG, args.fwd_usingEEG, args.check_for_channels_inconsistency, args=args)
+        else:
+            flags['calc_inverse_operator'] = True
+    else:
+        flags['make_forward_solution'] = True
+        flags['calc_inverse_operator'] = True
     return flags
 
 
@@ -5842,8 +5908,8 @@ def main(tup, remote_subject_dir, org_args, flags=None):
             subject, conditions, args.atlas, inverse_method, args.extract_mode, args.fmin, args.fmax, args.bandwidth,
             args.bands, args.max_epochs_num, MRI_SUBJECT, args.epo_fname, args.inv_fname, args.snr, args.pick_ori,
             args.apply_SSP_projection_vectors, args.add_eeg_ref, args.fwd_usingMEG, args.fwd_usingEEG, args.surf_name,
-            args.precentiles, overwrite=args.overwrite_labels_power_spectrum, save_tmp_files=args.save_tmp_files,
-            n_jobs=args.n_jobs)
+            args.precentiles, (args.baseline_min, args.baseline_max), overwrite=args.overwrite_labels_power_spectrum,
+            save_tmp_files=args.save_tmp_files, n_jobs=args.n_jobs)
 
     if 'calc_vertices_data_power_bands' in args.function:
         flags['calc_vertices_data_power_bands'] = calc_vertices_data_power_bands(

@@ -76,19 +76,26 @@ def anatomy_preproc(args, subject=''):
         function='create_annotation',
         overwrite_fs_files=args.overwrite,
         atlas='laus125',
-        ignore_missing=False
+        ignore_missing=True
     ))
     anat.call_main(args)
 
 
 def get_empty_fnames(subject, tasks, args, overwrite=False):
     utils.make_dir(op.join(MEG_DIR, subject))
-    utils.make_link(op.join(args.remote_subject_dir.format(subject=subject), 'bem'),
-                    op.join(MEG_DIR, subject, 'bem'), overwrite=overwrite)
-    for task in tasks:
-        utils.make_dir(op.join(MEG_DIR, task, subject))
-        utils.make_link(op.join(MEG_DIR, subject, 'bem'), op.join(MEG_DIR, task, subject, 'bem'), overwrite=overwrite)
-    utils.make_link(op.join(MEG_DIR, subject, 'bem'), op.join(SUBJECTS_DIR, subject, 'bem'), overwrite=overwrite)
+    try:
+        if op.islink(op.join(SUBJECTS_DIR, subject, 'bem')):
+            os.remove(op.join(SUBJECTS_DIR, subject, 'bem'))
+        utils.make_link(op.join(args.remote_subject_dir.format(subject=subject), 'bem'),
+                        op.join(SUBJECTS_DIR, subject, 'bem'), overwrite=overwrite)
+        utils.make_link(op.join(MEG_DIR, subject, 'bem'),
+                        op.join(SUBJECTS_DIR, subject, 'bem'), overwrite=overwrite)
+        for task in tasks:
+            utils.make_dir(op.join(MEG_DIR, task, subject))
+            utils.make_link(op.join(MEG_DIR, subject, 'bem'), op.join(SUBJECTS_DIR, subject, 'bem'), overwrite=overwrite)
+        utils.make_link(op.join(MEG_DIR, subject, 'bem'), op.join(SUBJECTS_DIR, subject, 'bem'), overwrite=overwrite)
+    except:
+        print('{}: Errors with making links'.format(subject))
 
     remote_meg_fol = op.join(args.remote_meg_dir, subject)
     csv_fname = op.join(remote_meg_fol, 'cfg.txt')
@@ -145,6 +152,53 @@ def get_empty_fnames(subject, tasks, args, overwrite=False):
 #             n_jobs=args.n_jobs
 #         ))
 #         meg.call_main(args)
+
+
+def calc_fwd_inv(args):
+    inv_method, em, atlas = 'dSPM', 'mean_flip', args.atlas
+    subjects = get_good_subjects(args)
+    args.subject = subjects
+    prepare_files(args)
+    good_subjects, bad_subjects = [], []
+
+    for subject in subjects:
+        args.subject = subject
+        empty_fnames, cors, days = get_empty_fnames(subject, args.tasks, args)
+        good_subject = True
+        for task in args.tasks:
+            meg_args = meg.read_cmd_args(dict(
+                subject=args.subject, mri_subject=args.subject,
+                task=task, inverse_method=inv_method, atlas=atlas,
+                remote_subject_dir=args.remote_subject_dir, # Needed for finding COR
+                get_task_defaults=False,
+                fname_format=args.epo_template.format(subject=subject, task=task)[:-len('-epo.fif')],
+                raw_fname=op.join(MEG_DIR, task, subject, args.raw_template.format(subject=subject, task=task)),
+                empty_fname=empty_fnames[task] if empty_fnames != '' else '',
+                function='make_forward_solution,calc_inverse_operator',
+                conditions=task.lower(),
+                fwd_fname=op.join(MEG_DIR, task, subject, '{}_{}_Onset-fwd.fif'.format(subject, task)),
+                inv_fname=op.join(MEG_DIR, task, subject, '{}_{}_Onset-inv.fif'.format(subject, task)),
+                cor_fname=cors[task].format(subject=subject) if cors != '' else '',
+                average_per_event=False,
+                data_per_task=True,
+                use_empty_room_for_noise_cov=True,
+                read_only_from_annot=False,
+                check_for_channels_inconsistency=args.check_for_channels_inconsistency,
+                overwrite_fwd=args.overwrite,
+                overwrite_inv=args.overwrite,
+                n_jobs=args.n_jobs
+            ))
+            ret = meg.call_main(meg_args)
+            good_subject = good_subject and ret[subject]['make_forward_solution'] and \
+                           ret[subject]['calc_inverse_operator']
+        if good_subject:
+            good_subjects.append(subject)
+        else:
+            bad_subjects.append(subject)
+    print('Good subjects ({}):'.format(len(good_subjects)))
+    print(good_subjects)
+    print('Bad subjects ({}):'.format(len(bad_subjects)))
+    print(bad_subjects)
 
 
 def meg_preproc_evoked(args):
@@ -278,27 +332,57 @@ def meg_sensors_psd(args):
             ret = meg.call_main(meg_args)
 
 
+def meg_preproc_power_how_many(args):
+    inv_method, em, atlas = 'dSPM', 'mean_flip', args.atlas
+    good_subjects, bad_subjects = [], []
+    subjects = get_good_subjects(args)
+    for subject in subjects:
+        fol = utils.make_dir(op.join(MMVT_DIR, subject, 'meg'))
+        good_subject = False
+        for task in args.tasks:
+            output_fname = op.join(fol, '{}_{}_{}_power_spectrum.npz'.format(task.lower(), inv_method, em))
+            if op.isfile(output_fname):
+                file_mod_time = utils.file_modification_time_struct(output_fname)
+                if file_mod_time.tm_year < 2019 or file_mod_time.tm_mon < 6 or (file_mod_time.tm_mon == 6 and
+                                                                                file_mod_time.tm_mday < 20):
+                    break
+                d = np.load(output_fname)
+                if 'power_spectrum_basline' in d and d['power_spectrum_basline'] is not None:
+                    good_subject = True
+        if good_subject:
+            good_subjects.append(subject)
+        else:
+            bad_subjects.append(subject)
+    print('Good subjects ({}):'.format(len(good_subjects)))
+    print(good_subjects)
+    print('Bad subjects ({}):'.format(len(bad_subjects)))
+    print(bad_subjects)
+
+
 def meg_preproc_power(args):
     inv_method, em, atlas = 'dSPM', 'mean_flip', args.atlas
     # bands = dict(theta=[4, 8], alpha=[8, 15], beta=[15, 30], gamma=[30, 55], high_gamma=[65, 200])
-    times = (-2, 4)
+    baseline = (-2, 0)
     subjects_with_error = []
     good_subjects = get_good_subjects(args)
     args.subject = good_subjects
     prepare_files(args)
     calc_power_spectrum = True
 
-    function = 'make_forward_solution,calc_inverse_operator'
-    if calc_power_spectrum:
-        function += ',calc_source_power_spectrum'
-    else:
-        function += ',calc_labels_induced_power'
+    # function = 'make_forward_solution,calc_inverse_operator'
+    func_name = 'calc_source_power_spectrum' if calc_power_spectrum else 'calc_labels_induced_power'
+    function = func_name # ',{}'.format(func_name)
 
     for subject in good_subjects:
         args.subject = subject
+        fol = utils.make_dir(op.join(MMVT_DIR, subject, 'meg'))
         empty_fnames, cors, days = get_empty_fnames(subject, args.tasks, args)
         input_fol = utils.make_dir(op.join(MEG_DIR, subject, 'labels_induced_power'))
         for task in args.tasks:
+            vertices_data_fname = op.join(
+                fol, '{}_{}_{}_vertices_power_spectrum.pkl'.format(task.lower(), inv_method, em))
+            if op.isfile(vertices_data_fname):
+                os.remove(vertices_data_fname)
             # output_fname = op.join(MMVT_DIR, subject, 'meg', '{}_{}_{}_power_spectrum.npz'.format(
             #     task.lower(), inv_method, em))
             # if op.isfile(output_fname) and args.check_file_modification_time:
@@ -332,7 +416,9 @@ def meg_preproc_power(args):
             if not op.isfile(local_epo_fname) and not op.isfile(remote_epo_fname):
                 print('Can\'t find {}!'.format(local_epo_fname))
                 continue
-            if not op.isfile(local_epo_fname):
+            if not op.isfile(local_epo_fname) and not op.exists(local_epo_fname):
+                if op.islink(local_epo_fname):
+                    os.remove(local_epo_fname)
                 utils.make_link(remote_epo_fname, local_epo_fname)
 
             meg_args = meg.read_cmd_args(dict(
@@ -344,6 +430,8 @@ def meg_preproc_power(args):
                 fname_format=args.epo_template.format(subject=subject, task=task)[:-len('-epo.fif')],
                 raw_fname=op.join(MEG_DIR, task, subject, args.raw_template.format(subject=subject, task=task)),
                 epo_fname=local_epo_fname,
+                fwd_fname=op.join(MEG_DIR, task, subject, '{}_{}_Onset-fwd.fif'.format(subject, task)),
+                inv_fname=op.join(MEG_DIR, task, subject, '{}_{}_Onset-inv.fif'.format(subject, task)),
                 empty_fname=empty_fnames.get(task, '') if empty_fnames != '' else '',
                 function=function,
                 conditions=task.lower(),
@@ -356,7 +444,7 @@ def meg_preproc_power(args):
                 ica_overwrite_raw=False,
                 normalize_data=False,
                 fwd_recreate_source_space=True,
-                t_min=times[0], t_max=times[1],
+                baseline_min=baseline[0], baseline_max=baseline[1],
                 read_events_from_file=False, stim_channels='STI001',
                 use_empty_room_for_noise_cov=True,
                 read_only_from_annot=False,
@@ -375,22 +463,26 @@ def meg_preproc_power(args):
                 n_jobs=args.n_jobs
             ))
             ret = meg.call_main(meg_args)
+            if subject in ret and func_name in ret[subject] and ret[subject][func_name]:
+                good_subjects.append(subject)
+            else:
+                subjects_with_error.append(subject)
             output_fol = utils.make_dir(op.join(MMVT_DIR, subject, 'labels', 'labels_data'))
             join_res_fol = utils.make_dir(op.join(utils.get_parent_fol(MMVT_DIR), 'msit-ecr', subject))
             for res_fname in glob.glob(op.join(output_fol, '{}_labels_{}_{}_*_power.npz'.format(
                     task.lower(), inv_method, em))):
                 utils.copy_file(res_fname, op.join(join_res_fol, utils.namebase_with_ext(res_fname)))
-            if not ret:
-                if args.throw:
-                    raise Exception("errors!")
-                else:
-                    subjects_with_error.append(subject)
+            # if not ret:
+            #     if args.throw:
+            #         raise Exception("errors!")
+            #     else:
+            #         subjects_with_error.append(subject)
 
-    good_subjects = [s for s in good_subjects if
-           op.isfile(op.join(MMVT_DIR, subject, 'meg',
-                             'labels_data_msit_{}_{}_{}_minmax.npz'.format(atlas, inv_method, em))) and
-           op.isfile(op.join(MMVT_DIR, subject, 'meg',
-                             'labels_data_ecr_{}_{}_{}_minmax.npz'.format(atlas, inv_method, em)))]
+    # good_subjects = [s for s in good_subjects if
+    #        op.isfile(op.join(MMVT_DIR, subject, 'meg',
+    #                          'labels_data_msit_{}_{}_{}_minmax.npz'.format(atlas, inv_method, em))) and
+    #        op.isfile(op.join(MMVT_DIR, subject, 'meg',
+    #                          'labels_data_ecr_{}_{}_{}_minmax.npz'.format(atlas, inv_method, em)))]
     print('Good subjects:')
     print(good_subjects)
     print('subjects_with_error:')
@@ -1022,6 +1114,8 @@ if __name__ == '__main__':
     parser.add_argument('-f', '--function', help='function name', required=False, default='meg_preproc_power')
     parser.add_argument('-a', '--atlas', help='atlas name', required=False, default='laus125') #darpa-atlas')
     parser.add_argument('-t', '--tasks', help='tasks', required=False, default='MSIT,ECR', type=au.str_arr_type)
+    parser.add_argument('-i', '--inverse_method', help='inverse_method', required=False, default='dSPM',
+                        type=au.str_arr_type)
     parser.add_argument('--overwrite', required=False, default=False, type=au.is_true)
     parser.add_argument('--overwrite_output_files', required=False, default=False, type=au.is_true)
     parser.add_argument('--overwrite_local_files', required=False, default=False, type=au.is_true)
@@ -1041,7 +1135,7 @@ if __name__ == '__main__':
     parser.add_argument('--remote_root_dir', required=False,
                         default='/autofs/space/karima_001/users/alex/MSIT_ECR_Preprocesing_for_Noam/')
     meg_dirs = ['/home/npeled/meg/{task}',
-                '/autofs/space/karima_001/users/alex/MSIT_ECR_Preprocesing_for_Noam/epochs']
+                '/autofs/space/cassia_004/users/MSIT_ECR_Preprocesing_for_Noam/epochs']
     meg_dir = [d for d in meg_dirs if op.isdir(d.format(task='MSIT'))][0]
     parser.add_argument('--meg_dir', required=False, default=meg_dir)
                         # default='/autofs/space/karima_001/users/alex/MSIT_ECR_Preprocesing_for_Noam/raw_preprocessed')
@@ -1058,6 +1152,7 @@ if __name__ == '__main__':
     args.n_jobs = utils.get_n_jobs(args.n_jobs)
 
     inv_method, em = 'dSPM', 'mean_flip'
+    bad_subjects = ['ep006', 'ep005', 'sp004', 'ep007', 'hc004', 'ep004', 'ep016'] #, 'ep006', 'ep005', 'sp004', 'ep007', 'hc004']
     if args.subject[0] == 'all':
         if args.function == 'post_analysis':
             res_fol = op.join(utils.get_parent_fol(MMVT_DIR), 'msit-ecr')
@@ -1079,6 +1174,9 @@ if __name__ == '__main__':
                  op.isfile(op.join(d, args.epo_template.format(subject=utils.namebase(d), task='MSIT')))])
         print('{} subjects were found with both tasks!'.format(len(args.subject)))
         print(sorted(args.subject))
+        for bad_subject in bad_subjects:
+            if bad_subject in args.subject:
+                args.subject.remove(bad_subject)
     elif '*' in args.subject[0]:
         args.subject = utils.shuffle(
             [utils.namebase(d) for d in glob.glob(op.join(args.meg_dir, args.subject[0])) if op.isdir(d) and

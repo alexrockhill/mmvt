@@ -307,11 +307,36 @@ def get_blender_python_exe(blender_fol, gui=True):
                 blender_bin_fol = glob.glob(op.join(fol, '2.7?', 'python'))[-1]
         if blender_bin_fol == '':
             return '', ''
+    elif len(blender_bin_folders) > 1:
+        blender_bin_fol = select_file(blender_bin_folders)
     else:
-        # todo: let the use select the folder if more than one
         blender_bin_fol = blender_bin_folders[-1]
     python_exe = 'python.exe' if utils.is_windows() else 'python3.5m'
     return blender_bin_fol, python_exe
+
+
+def select_file(files):
+    print('More than one blender exist, please choose a folder:')
+    for ind, fname in enumerate(files):
+        print('{}) {}'.format(ind + 1, fname))
+    input_str = 'Which one do you want to pick (1, 2, ...)? Press 0 to cancel: '
+    file_num = input(input_str)
+    while not is_int(file_num):
+        print('Please enter a valid integer')
+        file_num = input(input_str)
+    if file_num == 0:
+        return ''
+    else:
+        file_num = int(file_num) - 1
+        return files[file_num]
+
+
+def is_int(s):
+    try:
+        int(s)
+        return True
+    except ValueError:
+        return False
 
 
 def get_pip_update_cmd(package='numpy'):
@@ -331,6 +356,7 @@ def install_blender_reqs(blender_fol='', gui=True):
         current_dir = os.getcwd()
         os.chdir(blender_bin_fol)
         # install blender reqs:
+        # todo: take this list from the reqs file
         reqs = 'matplotlib zmq pizco scipy mne joblib tqdm nibabel pdfkit decorator Pillow scikit-learn gitpython decorator'
         pip_cmd = '{} {}'.format(op.join('bin', python_exe), op.join(resource_fol, 'get-pip.py'))
         if not utils.is_windows():

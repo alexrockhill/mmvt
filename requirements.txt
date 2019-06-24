@@ -16,3 +16,4 @@ pizco
 decorator
 scikit-learn
 scikit-image
+tqdm

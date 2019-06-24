@@ -1212,7 +1212,8 @@ def create_high_level_atlas(subject, high_level_atlas_name='high.level.atlas', b
                 if len(line) == 0:
                     continue
                 elif len(line) > 1:
-                    new_label = lu.join_labels('{}-{}'.format(line[0], hemi), (look['{}-{}'.format(l, hemi)] for l in line[1:]))
+                    new_label = lu.join_labels(
+                        '{}-{}'.format(line[0], hemi), (look['{}-{}'.format(l, hemi)] for l in line[1:]))
                 else:
                     new_label = look['{}-{}'.format(line[0], hemi)]
                 labels.append(new_label)

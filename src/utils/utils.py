@@ -36,6 +36,7 @@ except:
 from src.mmvt_addon import mmvt_utils as mu
 # links to mmvt_utils
 Bag = mu.Bag
+copy_file = mu.copy_file
 make_dir = mu.make_dir
 hemi_files_exists = mu.hemi_files_exists
 get_hemi_from_full_fname = mu.get_hemi_from_full_fname
@@ -194,6 +195,11 @@ def arr_to_colors_two_colors_maps(x, x_min=None, x_max=None, cm_big='YlOrRd', cm
 def calc_abs_minmax(x, norm_percs=None):
     x_min, x_max = calc_min_max(x, norm_percs=norm_percs)
     return max(map(abs, [x_min, x_max]))
+
+
+def calc_signed_abs_minmax(x, norm_percs=None):
+    x_min, x_max = calc_min_max(x, norm_percs=norm_percs)
+    return x_min if abs(x_min) > abs(x_max) else x_max
 
 
 def calc_minmax_abs_from_minmax(data_min, data_max):
@@ -1886,7 +1892,7 @@ def locating_file(default_fname, glob_pattern, parent_fols, raise_exception=Fals
         if '{cond}' in fname:
             exist = len(glob.glob(fname.replace('{cond}', '*'))) > 1
         else:
-            exist = op.isfile(fname)
+            exist = op.isfile(fname) or op.islink(fname)
         if exist:
             break
     if not exist:
@@ -2317,6 +2323,3 @@ def extract_numpy_values_with_zero_dimensions(x):
     return x.item()
 
 
-def copy_file(src, dst):
-    if src != dst:
-        shutil.copyfile(src, dst)

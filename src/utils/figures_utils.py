@@ -17,7 +17,7 @@ MMVT_DIR = utils.get_link_dir(utils.get_links_dir(), 'mmvt')
 # @utils.tryit()
 def plot_color_bar(data_max, data_min, colors_map, ax=None, fol='', do_save=True, cb_ticks=None,
                    background_color='black', cb_ticks_font_size=10, cb_title='', colorbar_name='', dpi=100,
-                   h=None, w=None, set_cb_max_min_using_ticks=True, cb_ticks_perc=2, **kargs):
+                   h=None, w=None, set_cb_max_min_using_ticks=True, cb_ticks_perc=2, file_type='jpg', **kargs):
     import matplotlib as mpl
 
     if ',' in background_color:
@@ -49,10 +49,11 @@ def plot_color_bar(data_max, data_min, colors_map, ax=None, fol='', do_save=True
                          fontsize=cb_ticks_font_size)
     resize_and_move_ax(ax, ddw=0.07, ddh=0.8)
     if colorbar_name == '':
-        colorbar_name = '{}_colorbar.jpg'.format(color_map_name)
+        colorbar_name = '{}_colorbar.{}'.format(color_map_name, file_type)
     if do_save:
         fname = op.join(fol, colorbar_name)
         plt.savefig(fname, facecolor=fig.get_facecolor(), transparent=True, bbox_inches='tight')
+        plt.close()
     else:
         plt.show()
     return cb

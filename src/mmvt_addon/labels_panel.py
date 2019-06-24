@@ -9,7 +9,12 @@ import numpy as np
 import re
 import mmvt_utils as mu
 import colors_utils as cu
-import mne
+
+try:
+    import mne
+    MNE_EXIST = True
+except:
+    MNE_EXIST = False
 
 
 def _addon():

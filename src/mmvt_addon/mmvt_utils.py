@@ -2733,6 +2733,17 @@ def create_labels_contours():
     run_command_in_new_thread(cmd, False)
 
 
+def copy_file(src, dst):
+    if src != dst:
+        if op.islink(get_parent_fol(dst)):
+            fol = os.readlink(get_parent_fol(dst))
+            dst = op.join(fol, namebase_with_ext(dst))
+        try:
+            shutil.copyfile(src, dst)
+        except:
+            print_last_error_line()
+
+
 def make_link(source, target, overwrite=False, copy_if_fails=True):
     if is_windows():
         try:
@@ -2742,15 +2753,19 @@ def make_link(source, target, overwrite=False, copy_if_fails=True):
             ret = kdll.CreateSymbolicLinkA(source, target, 0)
             if (not ret or op.getsize(target) == 0) and copy_if_fails:
                 remove_file(target)
-                shutil.copy(source, target)
+                copy_file(source, target)
+                # shutil.copy(source, target)
             return op.exists(target)
         except:
             print(traceback.format_exc())
     try:
+        if op.islink(target):
+            os.remove(target)
         if op.exists(source):
             ret = os.symlink(source, target)
             if not ret and copy_if_fails and source != target:
-                shutil.copy(source, target)
+                copy_file(source, target)
+                # shutil.copy(source, target)
             return True
         else:
             print('make_link: source {} doesn\'t exist!'.format(source))
