@@ -1261,7 +1261,7 @@ def vertex_object_coloring(cur_obj, mesh, coloring_layer, valid_verts, vert_valu
     if vert_values.ndim == 1 and data_min is not None:
         verts_colors = calc_colors(vert_values, data_min, colors_ratio)
         colors_picked_from_cm = True
-    if override_current_mat:
+    if False:  #override_current_mat:
         recreate_coloring_layers(mesh, coloring_layer)
         # vcol_layer = mesh.vertex_colors["Col"]
 

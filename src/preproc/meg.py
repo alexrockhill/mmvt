@@ -5239,7 +5239,7 @@ def calc_contours(subject, atlas_name, hemi, clusters_labels, clusters_labels_fo
     #     utils.copy_file(annot_fname, dest_annot_fname)
     # else:
     #     print('calc_contours: No annot file!')
-    contours = anat.calc_labeles_contours(
+    contours, _ = anat.calc_labeles_contours(
         subject, atlas_name[:-3], hemi=hemi, overwrite=True, labels_dict=labels_dict, verts_dict=verts_dict,
         verts_neighbors_dict=verts_neighbors_dict, check_unknown=False, save_lookup=False, return_contours=True)
     return contours[hemi]
